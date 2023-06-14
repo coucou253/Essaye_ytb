@@ -1,0 +1,156 @@
+import os
+import sys
+from pathlib import Path
+from threading import Thread
+from concurrent.futures import ThreadPoolExecutor
+from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget, QMessageBox, QFileDialog, QComboBox, QProgressBar
+from pytube import YouTube, Playlist
+
+class YouTubeDownloader(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Téléchargeur YouTube")
+        self.setFixedSize(400, 400)
+
+        self.lbl_url = QLabel("URL de la vidéo ou de la playlist :", self)
+        self.lbl_url.move(20, 20)
+        self.entry_url = QLineEdit(self)
+        self.entry_url.move(20, 50)
+
+        self.lbl_destination = QLabel("Chemin de destination :", self)
+        self.lbl_destination.move(20, 80)
+        self.entry_destination = QLineEdit(self)
+        self.entry_destination.move(20, 110)
+        self.entry_destination.setText(str(Path.home() / "Downloads"))
+
+        self.btn_parcourir = QPushButton("Parcourir", self)
+        self.btn_parcourir.move(300, 110)
+        self.btn_parcourir.clicked.connect(self.choisir_dossier)
+
+        self.lbl_format_video = QLabel("Format de la vidéo :", self)
+        self.lbl_format_video.move(20, 140)
+        self.combo_format_video = QComboBox(self)
+        self.combo_format_video.move(20, 170)
+        self.combo_format_video.addItems(["MKV", "MP4"])
+
+        self.lbl_qualite_video = QLabel("Qualité de la vidéo :", self)
+        self.lbl_qualite_video.move(20, 200)
+        self.combo_qualite_video = QComboBox(self)
+        self.combo_qualite_video.move(20, 230)
+
+        self.lbl_format_audio = QLabel("Format de l'audio :", self)
+        self.lbl_format_audio.move(20, 260)
+        self.combo_format_audio = QComboBox(self)
+        self.combo_format_audio.move(20, 290)
+        self.combo_format_audio.addItem("M4A")
+
+        self.btn_telecharger = QPushButton("Télécharger", self)
+        self.btn_telecharger.move(20, 330)
+        self.btn_telecharger.clicked.connect(self.telecharger)
+
+        self.progress_bar = QProgressBar(self)
+        self.progress_bar.setGeometry(20, 360, 360, 20)
+        self.progress_bar.hide()
+
+        self.entry_url.textChanged.connect(self.maj_resolutions)
+        self.combo_format_video.currentIndexChanged.connect(self.maj_resolutions)
+
+    def choisir_dossier(self):
+        dossier = QFileDialog.getExistingDirectory(self, "Sélectionner le dossier de destination")
+        if dossier:
+            self.entry_destination.setText(dossier)
+
+    def maj_resolutions(self):
+        url = self.entry_url.text()
+        format_video = self.combo_format_video.currentText()
+
+        if not url or not format_video:
+            self.combo_qualite_video.clear()
+            return
+
+        resolutions = self.obtenir_resolutions_disponibles(url, format_video)
+        self.combo_qualite_video.clear()
+        self.combo_qualite_video.addItems(resolutions)
+
+    def obtenir_resolutions_disponibles(self, url, format_video):
+        resolutions = set()
+
+        try:
+            video = YouTube(url)
+            streams = video.streams.filter(file_extension=format_video.lower(), progressive=True)
+            for stream in streams:
+                if stream.resolution:
+                    resolutions.add(stream.resolution)
+        except:
+            pass
+
+        return sorted(list(resolutions))
+
+    def telecharger(self):
+        url = self.entry_url.text()
+        destination = self.entry_destination.text()
+        format_video = self.combo_format_video.currentText()
+        qualite_video = self.combo_qualite_video.currentText()
+        format_audio = self.combo_format_audio.currentText()
+
+        if not url or not destination:
+            QMessageBox.warning(self, "Champs vides", "Veuillez remplir tous les champs.")
+            return
+
+        if "playlist" in url.lower():
+            self.telecharger_playlist(url, destination, format_video, qualite_video, format_audio)
+        else:
+            self.telecharger_audio(url, destination, format_audio)
+
+        self.entry_url.clear()
+        self.entry_destination.clear()
+
+    def telecharger_video(self, url, destination, format_video, qualite_video):
+        try:
+            video = YouTube(url)
+            stream = video.streams.filter(progressive=True, file_extension=format_video.lower(), resolution=qualite_video).first()
+            stream.download(destination)
+            QMessageBox.information(self, "Téléchargement terminé", "La vidéo a été téléchargée avec succès !")
+        except Exception as e:
+            QMessageBox.critical(self, "Erreur de téléchargement", f"Une erreur est survenue lors du téléchargement de la vidéo : {str(e)}")
+
+    def telecharger_audio(self, url, destination, format_audio):
+        try:
+            video = YouTube(url)
+            stream = video.streams.filter(only_audio=True, file_extension=format_audio.lower()).first()
+            stream.download(destination)
+            QMessageBox.information(self, "Téléchargement terminé", "L'audio a été téléchargé avec succès !")
+        except Exception as e:
+            QMessageBox.critical(self, "Erreur de téléchargement", f"Une erreur est survenue lors du téléchargement de l'audio : {str(e)}")
+
+    def telecharger_playlist(self, url_playlist, destination, format_video, qualite_video, format_audio):
+        try:
+            playlist = Playlist(url_playlist)
+            playlist_folder = os.path.join(destination, playlist.title())
+            os.makedirs(playlist_folder, exist_ok=True)
+
+            total_videos = len(playlist.video_urls)
+            self.progress_bar.setMaximum(total_videos)
+            self.progress_bar.show()
+
+            def telecharger_video_playlist(video_url, index):
+                self.telecharger_video(video_url, playlist_folder, format_video, qualite_video)
+                self.progress_bar.setValue(index)
+
+            with ThreadPoolExecutor() as executor:
+                futures = [executor.submit(telecharger_video_playlist, video_url, index) for index, video_url in enumerate(playlist.video_urls, start=1)]
+                for future in futures:
+                    future.result()
+
+            self.progress_bar.hide()
+
+            QMessageBox.information(self, "Téléchargement terminé", "La playlist a été téléchargée avec succès !")
+        except Exception as e:
+            QMessageBox.critical(self, "Erreur de téléchargement", f"Une erreur est survenue lors du téléchargement de la playlist : {str(e)}")
+
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = YouTubeDownloader()
+    window.show()
+    sys.exit(app.exec_())
